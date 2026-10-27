@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Road Damage Detector – Demo</title>
+<style>
+:root{--bg:#f2f3f5;--ink:#1d2127;--mute:#5d6672;--card:#ffffff;--line:#d9dde3;--accent:#1f5eff;--crack:#c27a00;--pothole:#c62f2f;--ok:#1f8a4c}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171b;--ink:#eceff3;--mute:#9aa4b1;--card:#1d2127;--line:#2f353d;--accent:#6f9bff;--crack:#e8a73a;--pothole:#ff6b6b;--ok:#4cc27f}}
+:root[data-theme="dark"]{--bg:#14171b;--ink:#eceff3;--mute:#9aa4b1;--card:#1d2127;--line:#2f353d;--accent:#6f9bff;--crack:#e8a73a;--pothole:#ff6b6b;--ok:#4cc27f}
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*:before,*:after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI",system-ui,Roboto,Arial,sans-serif;line-height:1.45}
+main{max-width:560px;margin:0 auto;padding:18px 16px 40px}
+h1{font-size:1.35rem;margin:0 0 4px}
+p.sub{margin:0 0 16px;color:var(--mute);font-size:.92rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+label.pick{display:block;border:2px dashed var(--line);border-radius:10px;padding:22px 12px;text-align:center;cursor:pointer;color:var(--mute)}
+label.pick:focus-within{outline:2px solid var(--accent)}
+input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
+#prev{display:none;width:100%;max-height:260px;object-fit:cover;border-radius:8px;margin-top:12px}
+button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:11px 16px;background:var(--accent);color:#fff;cursor:pointer;width:100%;margin-top:12px}
+button:disabled{opacity:.5;cursor:not-allowed}
+button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.row{display:flex;justify-content:space-between;gap:8px;font-size:.92rem;padding:4px 0}
+.row span:first-child{color:var(--mute)}
+.tag{display:inline-block;font-weight:700;padding:2px 10px;border-radius:99px;color:#fff}
+.tag.crack{background:var(--crack)}.tag.pothole{background:var(--pothole)}.tag.no_damage{background:var(--ok)}
+.bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--accent)}
+#result{display:none}
+.rep{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.rep:first-child{border-top:0}
+.rep img{width:52px;height:52px;object-fit:cover;border-radius:6px}
+.rep small{color:var(--mute);display:block}
+#mapbox{position:relative;height:200px;background:var(--bg);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.pin{position:absolute;width:14px;height:14px;border-radius:50%;border:2px solid #fff;transform:translate(-50%,-50%)}
+.note{font-size:.82rem;color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+<h1>Road Damage Detector (demo)</h1>
+<p class="sub">Runs entirely in your browser. No Python, Firebase or Android Studio needed. The classifier here is a simple stand-in, not the trained CNN.</p>
+
+<div class="card">
+  <label class="pick" for="file">Tap to take or choose a road photo
+    <input id="file" type="file" accept="image/*" capture="environment">
+  </label>
+  <img id="prev" alt="Selected road photo">
+  <button id="go" disabled>Analyze photo</button>
+</div>
+
+<div class="card" id="result" aria-live="polite">
+  <div class="row"><span>Result</span><span><span id="lab" class="tag"></span></span></div>
+  <div class="row"><span>Confidence</span><span id="conf"></span></div>
+  <div class="bar"><i id="confbar"></i></div>
+  <div class="row"><span>Location</span><span id="loc"></span></div>
+  <div class="row"><span>Time</span><span id="when"></span></div>
+  <button id="save">Save report</button>
+</div>
+
+<div class="card">
+  <strong>Reports map</strong>
+  <p class="note" style="margin:4px 0 10px">Pins are placed relative to each other. A real map needs the Google Maps key.</p>
+  <div id="mapbox"></div>
+</div>
+
+<div class="card">
+  <strong>Saved reports</strong>
+  <div id="list"><p class="note">No reports yet. Analyze a photo and save it.</p></div>
+</div>
+</main>
+
+<script>
+(function(){
+  var file=document.getElementById('file'),prev=document.getElementById('prev'),go=document.getElementById('go'),
+      res=document.getElementById('result'),reports=[],cur=null,imgURL='';
+  var colors={crack:'#c27a00',pothole:'#c62f2f',no_damage:'#1f8a4c'};
+  var names={crack:'Crack',pothole:'Pothole',no_damage:'No damage'};
+
+  file.addEventListener('change',function(){
+    var f=file.files[0]; if(!f) return;
+    imgURL=URL.createObjectURL(f); prev.src=imgURL; prev.style.display='block'; go.disabled=false; res.style.display='none';
+  });
+
+  // Stand-in classifier: measures darkness and edge density of the photo.
+  function classify(img){
+    var c=document.createElement('canvas'),w=96,h=96; c.width=w;c.height=h;
+    var x=c.getContext('2d'); x.drawImage(img,0,0,w,h);
+    var d=x.getImageData(0,0,w,h).data,g=[],i,dark=0,sum=0;
+    for(i=0;i<d.length;i+=4){var v=.299*d[i]+.587*d[i+1]+.114*d[i+2];g.push(v);sum+=v;}
+    var mean=sum/g.length,edge=0;
+    for(var yy=1;yy<h;yy++)for(var xx=1;xx<w;xx++){
+      var p=yy*w+xx; edge+=Math.abs(g[p]-g[p-1])+Math.abs(g[p]-g[p-w]);
+      if(g[p]<mean*0.6)dark++;
+    }
+    edge=edge/(w*h*2); dark=dark/(w*h);
+    var label,conf;
+    if(dark>0.16){label='pothole';conf=Math.min(.95,.62+dark);}
+    else if(edge>9){label='crack';conf=Math.min(.93,.55+edge/40);}
+    else{label='no_damage';conf=Math.min(.96,.7+(9-edge)/40);}
+    return {label:label,conf:conf};
+  }
+
+  function getLoc(cb){
+    if(!navigator.geolocation){cb(null);return;}
+    navigator.geolocation.getCurrentPosition(function(p){cb({lat:p.coords.latitude,lng:p.coords.longitude});},function(){cb(null);},{timeout:6000});
+  }
+
+  go.addEventListener('click',function(){
+    go.disabled=true; go.textContent='Analyzing...';
+    var r=classify(prev);
+    getLoc(function(loc){
+      if(!loc){loc={lat:12.9716+(Math.random()-.5)*.02,lng:77.5946+(Math.random()-.5)*.02,fake:true};}
+      cur={label:r.label,conf:r.conf,loc:loc,time:new Date(),img:imgURL};
+      var l=document.getElementById('lab'); l.textContent=names[r.label]; l.className='tag '+r.label;
+      document.getElementById('conf').textContent=(r.conf*100).toFixed(1)+'%';
+      document.getElementById('confbar').style.width=(r.conf*100)+'%';
+      document.getElementById('loc').textContent=loc.lat.toFixed(4)+', '+loc.lng.toFixed(4)+(loc.fake?' (sample)':'');
+      document.getElementById('when').textContent=cur.time.toLocaleString();
+      res.style.display='block'; go.disabled=false; go.textContent='Analyze photo';
+    });
+  });
+
+  document.getElementById('save').addEventListener('click',function(){
+    if(!cur)return; reports.unshift(cur); cur=null; res.style.display='none'; render();
+  });
+
+  function render(){
+    var list=document.getElementById('list'),box=document.getElementById('mapbox');
+    list.innerHTML=''; box.innerHTML='';
+    reports.forEach(function(r){
+      var d=document.createElement('div'); d.className='rep';
+      var im=document.createElement('img'); im.src=r.img; im.alt='';
+      var t=document.createElement('div');
+      t.innerHTML='<span class="tag '+r.label+'">'+names[r.label]+'</span> '+(r.conf*100).toFixed(0)+'%<small>'+r.loc.lat.toFixed(4)+', '+r.loc.lng.toFixed(4)+' · '+r.time.toLocaleTimeString()+'</small>';
+      d.appendChild(im); d.appendChild(t); list.appendChild(d);
+    });
+    if(reports.length){
+      var la=reports.map(function(r){return r.loc.lat}),ln=reports.map(function(r){return r.loc.lng});
+      var a=Math.min.apply(null,la),b=Math.max.apply(null,la),c=Math.min.apply(null,ln),e=Math.max.apply(null,ln);
+      reports.forEach(function(r){
+        var p=document.createElement('div'); p.className='pin'; p.style.background=colors[r.label];
+        p.style.left=(10+80*(e===c?.5:(r.loc.lng-c)/(e-c)))+'%';
+        p.style.top=(10+80*(b===a?.5:(b-r.loc.lat)/(b-a)))+'%';
+        box.appendChild(p);
+      });
+    } else list.innerHTML='<p class="note">No reports yet. Analyze a photo and save it.</p>';
+  }
+})();
+</script>
+</body>
+</html>
